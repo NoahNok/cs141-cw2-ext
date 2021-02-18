@@ -20,7 +20,7 @@ import Control.Monad
 import Data.Aeson
 
 import qualified Network.HTTP.Media as M
-import Network.Wai.Handler.Warp (withApplication)
+import Network.Wai.Handler.Warp (withApplication, run)
 
 import Text.Printf
 
@@ -31,6 +31,7 @@ import Servant
 
 import Convert
 import Interpreter
+import GHC.Conc
 
 --------------------------------------------------------------------------------
 
@@ -94,9 +95,10 @@ scratchApp = serve scratchAPI scratchServer
 main :: IO ()
 main = do
     putStrLn "Starting web server..."
-    withApplication (pure scratchApp) $ \port -> do 
-        putStrLn $ printf "Started on http://localhost:%d" port
-        putStrLn "Press enter to quit."
-        void getChar
+    tid <- forkIO $ run 8000 scratchApp
+    putStrLn "Started on http://localhost:8000"
+    putStrLn "Press enter to quit."
+    void getChar
+    killThread tid
 
 --------------------------------------------------------------------------------
