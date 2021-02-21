@@ -5,7 +5,7 @@
 
 -- | This module contains the types for the abstract syntax tree.
 module Language where
-
+import Data.Foldable
 --------------------------------------------------------------------------------
 
 -- | A program consists of a sequence of statements.
@@ -29,6 +29,7 @@ data Stmt
     }
     deriving Show
 
+
 --------------------------------------------------------------------------------
 
 -- | Operators.
@@ -45,6 +46,24 @@ data Op
     | GreaterThan                       -- ^ The > operator.
     | GreaterOrEqual                    -- ^ The >= operator.
     deriving (Eq, Enum, Bounded, Show)
+
+-- | Converts the Op data type to the actual function,
+-- | Returns either an integer or boolean result that can be sorted
+toOp :: Op -> Either (Int -> Int -> Int) (Int -> Int -> Bool)
+toOp Add = Left (+)
+toOp Sub = Left (-)
+toOp Mul = Left (*)
+toOp Div = Left div
+toOp Pow = Left (^)
+toOp Equal = Right (==)
+toOp Neq = Right (/=)
+toOp LessThan = Right (<)
+toOp LessOrEqual = Right (<=)
+toOp GreaterThan = Right (>)
+toOp GreaterOrEqual = Right (>=)
+
+
+
 
 -- | Expressions.
 data Expr
