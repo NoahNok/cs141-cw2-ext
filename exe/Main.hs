@@ -20,9 +20,8 @@ import Control.Monad
 import Data.Aeson
 
 import qualified Network.HTTP.Media as M
-import Network.Wai.Handler.Warp (withApplication, run)
+import Network.Wai.Handler.Warp (run)
 
-import Text.Printf
 
 import WaiAppStatic.Types
 import WaiAppStatic.Storage.Filesystem
@@ -77,8 +76,8 @@ webAppSettings = (defaultWebAppSettings ".") {
 
 -- | The request handler for evaluation requests.
 runInterpreter :: Doc -> Handler RunResponse
-runInterpreter (Doc vs stmts) =
-    case interpret stmts [(v,0) | v <- vs] of
+runInterpreter (Doc vs funcs) =
+    case interpretStart funcs [(v,0) | v <- vs] of
         Left err -> return $ RunFailure (show err)
         Right mem -> return $ RunSuccess mem
 

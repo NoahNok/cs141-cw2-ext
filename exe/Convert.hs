@@ -30,7 +30,7 @@ import Language
 -- | Represents a Google Blockly XML document.
 data Doc = Doc {
     docVars    :: [String],  -- ^ A list of variable names.
-    docProgram :: Program    -- ^ The program.
+    docProgram :: Functions    -- ^ The program.
 } deriving Show
 
 --------------------------------------------------------------------------------
@@ -161,8 +161,6 @@ parseBinOp e = do
         toOp "GTE"      = GreaterOrEqual
         toOp _          = error "(toOp) Unknown operator"
 
-parseEntryPoint :: Parser Element Program
-parseEntryPoint = parseNext
 
 parseVarSet :: Parser Element Program
 parseVarSet e = do
@@ -202,15 +200,16 @@ parseExprTy "math_number"     = parseMathNumber
 parseExprTy "math_arithmetic" = parseBinOp
 parseExprTy "logic_compare"   = parseBinOp
 parseExprTy "variables_get"   = parseVarGet
+parseExprTy "procedures_callreturn" = parseFunc -- Function Call Parser
 parseExprTy ty                = const $ throwE $
     "Unknown block type: " ++ unpack ty
 
 -- | Parses the body of a statement block.
 parseStmtTy :: Text -> Parser Element Program
-parseStmtTy "entry_point"         = parseEntryPoint
 parseStmtTy "variables_set"       = parseVarSet
 parseStmtTy "controls_repeat_ext" = parseRepeat
 parseStmtTy "controls_if"         = parseControlIf
+parseStmtTy "procedures_callnoreturn" = parseProc -- Procedure Call Parser
 parseStmtTy ty = const $ throwE $
     "Unknown block type: " ++ unpack ty
 
@@ -240,11 +239,213 @@ parseDoc (Element {..}) = do
     ve <- require "Variables section is missing!" $
             element "variables" elementNodes
     vs <- parseVars ve
-    bs <- mapM parseStmt (elementsByName "block" elementNodes) -- TODO: only parse the entry point and ignore everything else
-    return $ Doc vs (Prelude.concat bs)
+    bs <- mapM parseFunctionBlock (elementsByName "block" elementNodes) -- TODO: only parse the entry point and ignore everything else
+    return $ Doc vs (Functions bs)
 
 -- | Tries to convert a byte string into a document.
 convert :: BS.ByteString -> Either String Doc
 convert = runExcept . parseDoc . documentRoot . parseLBS
+
+
+
+
+
+-- Parsing Extension additions
+
+parseFunc :: Parser Element Expr
+parseFunc e = do
+    params <- parseFuncParams e 
+    muts <- mutations e
+    let funcName = fromMaybe "" ( M.lookup "name" muts)
+    return $ RunFunc (unpack funcName) params
+
+parseProc :: Parser Element Program
+parseProc e = do
+    params <- parseFuncParams e 
+    --throwE (show params)
+    muts <- mutations e
+    let funcName = fromMaybe  "" (M.lookup "name" muts)
+    p <- parseNext e
+    return $ RunProc (unpack funcName) params : p
+
+
+
+parseFuncParams :: Parser Element [Stmt]
+parseFuncParams e = do
+    case element "mutation" (elementNodes  e) of
+        Nothing -> return [AssignStmt "parseFuncParams" (ValE 1)] 
+        Just e' -> return $ parseFuncParamsIter (Prelude.length (elementNodes e')) e
+
+parseFuncParamsIter :: Int -> Element -> [Stmt]
+parseFuncParamsIter 0 _ = []
+parseFuncParamsIter ind e = do
+    case parseFuncParam ind e of
+        Nothing -> [AssignStmt "parseFuncParamsIter" (ValE 1)]
+        Just stmt -> stmt : parseFuncParamsIter (ind-1) e
+
+
+
+parseFuncParam :: Int -> Element -> Maybe Stmt
+parseFuncParam ind e = do
+
+    
+
+    paramName <- getParamName ind e
+    paramVal <- getParamValue ind e
+
+    
+
+    Just (AssignStmt (unpack paramName) paramVal)
+
+--    paramValue <- getParamValue ind e
+
+--    return $ AssignStmt (unpack paramName) paramValue
+
+getParamName :: Int -> Element -> Maybe Text
+getParamName ind e = do
+    muts <- element "mutation" (elementNodes e)
+    let nodes = elementNodes muts
+
+    let nod = nodes !! (ind-1)
+
+    el <- nodeToElement nod
+
+    let attribs = elementAttributes el
+    
+    name <- M.lookup "name" attribs
+
+    Just name
+
+
+getParamValue :: Int -> Element -> Maybe Expr  
+getParamValue ind e = do
+    let val = elementsByName "value" (elementNodes e)
+
+    let nod = val !! (ind-1)
+
+    block <- element "block" (elementNodes nod)
+
+    let blockAttribs = elementAttributes block
+
+    tp <- M.lookup "type" blockAttribs
+
+    case tp of
+        "math_number" -> getParamValueFromMath block
+        "variables_get" -> getParamValueFromMath block
+        "procedures_callreturn" -> getParamValueFromFunc block
+        "math_arithmetic" -> getParamValueFromArith block
+        _ -> Nothing
+
+
+getParamValueFromMath :: Element -> Maybe Expr
+getParamValueFromMath block = do
+    fied <- element "field" (elementNodes block)
+    cont <- nodeToContent (Prelude.head $ elementNodes fied) -- Either "number" or "variable"
+
+    let attribs = elementAttributes fied
+    ty <- M.lookup "name" attribs
+
+    case ty of 
+        "NUM" -> Just $ ValE (read (unpack cont))
+        "VAR" -> Just $ VarE (unpack cont)
+        _ -> Nothing
+
+getParamValueFromFunc :: Element -> Maybe Expr 
+getParamValueFromFunc e = do
+    let fun = parseFunc e
+    case runExcept fun of 
+        Left _ -> Nothing
+        Right ep -> Just ep
+
+getParamValueFromArith :: Element -> Maybe Expr        
+getParamValueFromArith e = do
+    let fun = parseBinOp e
+    case runExcept fun of 
+        Left _ -> Nothing
+        Right ep -> Just ep
+
+
+parseFunctionBlock :: Parser Element (String, Func)
+parseFunctionBlock e@(Element {..}) = case M.lookup "id" elementAttributes of
+    Nothing -> throwE $
+        "Block " ++ unpack (nameLocalName elementName) ++
+        " is missing attribute: id"
+    Just _  -> case M.lookup "type" elementAttributes of
+        Nothing -> throwE "Block is missing attribute: type"
+        Just ty -> parseFunctionBlockTy ty e
+
+parseFunctionBlockTy :: Text -> Parser Element (String, Func)
+parseFunctionBlockTy "entry_point" = parseEntryPoint
+parseFunctionBlockTy "procedures_defreturn" = parseFunction 
+parseFunctionBlockTy "procedures_defnoreturn" = parseProcedure
+parseFunctionBlockTy ty = const $ throwE $
+    "Unknown Function block type: " ++ unpack ty
+
+
+parseEntryPoint :: Parser Element (String, Func)
+parseEntryPoint e = do
+    prog <- parseNext e
+    return $ ("start", Func Nothing  prog)
+
+parseFunction :: Parser Element (String, Func)
+parseFunction e = do
+    prog <- parseFuncStatement e
+    let returnType = getFunctionReturnType e
+
+    let feld = element "field" (elementNodes e)
+    case feld of
+        Nothing -> throwE "Missing function field"
+        Just fild -> do
+            let name = nodeToContent (Prelude.head (elementNodes fild))
+            case name of 
+                Nothing -> throwE "Function has no name!"
+                Just n -> return (unpack n, Func returnType prog)
+                
+
+getFunctionReturnType :: Element -> Maybe Expr
+getFunctionReturnType e = do
+    vals <- element "value" (elementNodes e)
+    block <- element "block" (elementNodes vals)
+    fild <- element "field" (elementNodes  block)
+
+    let attribs = elementAttributes fild
+    typ <- M.lookup "name" attribs
+    val <- nodeToContent (Prelude.head (elementNodes fild))
+
+    case typ of
+        "NUM" -> Just (ValE (read  (unpack val)))
+        "VAR" -> Just (VarE (unpack val))
+        "OP" -> do
+            let binOp = parseBinOp block
+            let res = runExcept  binOp
+            case res of 
+                Left _ -> Nothing
+                Right ep -> Just ep
+
+        _ -> Nothing
+
+
+
+parseProcedure :: Parser Element (String, Func)
+parseProcedure e = do
+    prog <- parseFuncStatement e
+
+    let feld = element "field" (elementNodes e)
+    case feld of
+        Nothing -> throwE "Missing function field"
+        Just fild -> do
+            let name = nodeToContent (Prelude.head (elementNodes fild))
+
+            case name of 
+                Nothing -> throwE "Procedure has no name!"
+                Just n -> return $ ((unpack n), Func Nothing prog)
+
+
+
+parseFuncStatement :: Parser Element Program
+parseFuncStatement e = case element "statement" (elementNodes e) of
+    Nothing -> return []
+    Just e' -> Prelude.concat <$>
+        mapM parseStmt (elementsByName "block" (elementNodes e'))
 
 --------------------------------------------------------------------------------

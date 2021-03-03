@@ -8,6 +8,14 @@ module Language where
 import Data.Foldable
 --------------------------------------------------------------------------------
 
+
+-- | Stores all the programs functions
+newtype Functions = Functions [(String, Func)]
+
+instance Show Functions where
+    show _ = "Functions"
+
+
 -- | A program consists of a sequence of statements.
 type Program = [Stmt]
 
@@ -27,6 +35,7 @@ data Stmt
         repeatTimesExpr :: Expr,
         repeatBody      :: [Stmt]
     }
+    | RunProc String [Stmt]-- Will run a procedure that returns memory
     deriving Show
 
 
@@ -49,18 +58,18 @@ data Op
 
 -- | Converts the Op data type to the actual function,
 -- | Returns either an integer or boolean result that can be sorted
-toOp :: Op -> Either (Int -> Int -> Int) (Int -> Int -> Bool)
-toOp Add = Left (+)
-toOp Sub = Left (-)
-toOp Mul = Left (*)
-toOp Div = Left div
-toOp Pow = Left (^)
-toOp Equal = Right (==)
-toOp Neq = Right (/=)
-toOp LessThan = Right (<)
-toOp LessOrEqual = Right (<=)
-toOp GreaterThan = Right (>)
-toOp GreaterOrEqual = Right (>=)
+opToOp :: Op -> Either (Int -> Int -> Int) (Int -> Int -> Bool)
+opToOp Add = Left (+)
+opToOp Sub = Left (-)
+opToOp Mul = Left (*)
+opToOp Div = Left div
+opToOp Pow = Left (^)
+opToOp Equal = Right (==)
+opToOp Neq = Right (/=)
+opToOp LessThan = Right (<)
+opToOp LessOrEqual = Right (<=)
+opToOp GreaterThan = Right (>)
+opToOp GreaterOrEqual = Right (>=)
 
 
 
@@ -70,6 +79,14 @@ data Expr
     = ValE Int
     | VarE String
     | BinOpE Op Expr Expr
+    | RunFunc String [Stmt] -- Will run a function that returns a value for use in expressions
     deriving Show
+
+-- | Function Definition
+-- Func (Possible Return Value) Body
+data Func = Func (Maybe Expr) Program
+
+instance Show Func where
+    show _ = "Function"
 
 --------------------------------------------------------------------------------
