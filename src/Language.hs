@@ -35,7 +35,8 @@ data Stmt
         repeatTimesExpr :: Expr,
         repeatBody      :: [Stmt]
     }
-    | RunProc String [Stmt]-- Will run a procedure that returns memory
+    | RunProc String [Stmt] -- Will run a procedure that returns memory
+    | EarlyRet Expr Expr -- Execute a early return from a function
     deriving Show
 
 

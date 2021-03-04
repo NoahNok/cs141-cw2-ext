@@ -8,6 +8,7 @@ module Interpreter where
 --------------------------------------------------------------------------------
 
 import Language
+import Data.List
 
 
 --------------------------------------------------------------------------------
@@ -24,16 +25,16 @@ data Err
                                         -- that does not exist.
     | FunctionMissing String -- Custom error for missing function
     | FunctionShouldHaveReturn String -- Custom error for missing function return
+    | FunctionMissingEarlyReturn
     deriving (Eq, Show)
 
 --------------------------------------------------------------------------------
 
-
+-- | Starting point of the interpreter, forcefully calls the `start` main method
 interpretStart :: Functions -> Memory -> Either Err Memory
 interpretStart (Functions funcs) mem = do
-    case lookup "start" funcs of
-        Nothing -> Left (FunctionMissing "start")
-        Just (Func _ prog) -> interpret prog mem (Functions funcs)
+    (Func _ prog) <- maybeToEither (FunctionMissing "start") (lookup "start" funcs)
+    interpret prog mem (Functions funcs)
 
 -- | Given a program and the initial memory contents, determines
 -- what evaluating the program does to the memory.
@@ -41,8 +42,8 @@ interpret :: Program -> Memory -> Functions -> Either Err Memory
 interpret [] mem _ = Right mem
 interpret (x:xs) mem funcs = do
     res <- evalStatement x mem funcs
-    interpret xs res funcs
-    
+    if hasEarlyRet res then Right res else interpret xs res funcs
+
 
 -- | Evaluates the given statement 
 evalStatement :: Stmt  -> Memory -> Functions -> Either Err Memory
@@ -53,7 +54,7 @@ evalStatement :: Stmt  -> Memory -> Functions -> Either Err Memory
 evalStatement (AssignStmt string expr) mem f = do
     res <- evalExpression expr mem f
     return $ setMemory string res mem
-        
+
 -- First we take the given if and attach it and its program to the start of the list of else if's
 -- We then run it through 'evalIf' which will return either a program or and error
 -- If we encounter and error we pass it as the return, otherwise we call 'interpret' to run
@@ -75,6 +76,13 @@ evalStatement (RepeatStmt expression statements) mem f = do
 -- Run a given procedure returning memory 
 evalStatement (RunProc name params) mem f = runProc name params mem f
 
+evalStatement (EarlyRet condition toRet) mem f = do
+    res <- evalExpression condition mem f
+    if res == 0 then Right mem else do
+        ret <- evalExpression toRet mem f
+        let newMem = setMemory "PROC_EARLY_RETURN" ret mem
+        Right newMem
+
 -- | Returns the given program to run, based on the if
 -- Sequentially executes each expression, if it is true (not 0) then we return the associated 
 -- program. If we exhaust the list then we return the else case
@@ -93,13 +101,13 @@ evalIf ((condition,program):xs) elseProg mem f = do
 -- If it errors we return the error, otherwise we repeat with the returned memory with the
 -- repeat count minus 1. When it terminates it returns either the current state of the memory
 -- Or an error if it occurred (error is returned immediately when it happens)
-evalRepeat :: Program -> Int -> Memory -> Functions -> Either Err Memory 
+evalRepeat :: Program -> Int -> Memory -> Functions -> Either Err Memory
 evalRepeat _ 0 mem _ = Right mem
 evalRepeat program repeats mem funcs
     | repeats < 0 = Right mem
     | otherwise = do
     res <- interpret program mem funcs
-    evalRepeat program (repeats-1) res funcs
+    if hasEarlyRet res then Right res else evalRepeat program (repeats-1) res funcs
 
 
 -- | Evaluates the given expression
@@ -114,10 +122,8 @@ evalExpression (ValE value) _ _ = Right value;
 -- need to return the UninitialisedMemory error for the given string
 -- Can't use <- as we need to change a return of Nothing to a error
 evalExpression (VarE string) memory _ = do
-    let found = lookup string memory
-    case found of
-        Just value -> Right value
-        Nothing -> Left $ UninitialisedMemory string
+    maybeToEither (UninitialisedMemory string) (lookup string memory)
+
 
 -- BinOpE needs to first check that the given expression evaluate to numbers, if they don't we
 -- need to return the respective error. 
@@ -131,7 +137,7 @@ evalExpression (BinOpE op e1 e2) memory f = do
 
 -- RUns a given function returning a value
 evalExpression (RunFunc name params) memory f = runFunc name params memory f
-    
+
 -- | Given two integers and an operation we first check the two error cases for dividing by 0
 -- and a negative exponent. (We manually do the calc for neg exponent as its quicker)
 -- Then we call 'toOp' which returns the actual operator associated with the type
@@ -159,6 +165,11 @@ setMemory key value ((k,v):xs)
     | otherwise = (k,v) : setMemory key value xs
 
 
+-- ███████ ██   ██ ████████ ███████ ███    ██ ███████ ██  ██████  ███    ██ 
+-- ██       ██ ██     ██    ██      ████   ██ ██      ██ ██    ██ ████   ██ 
+-- █████     ███      ██    █████   ██ ██  ██ ███████ ██ ██    ██ ██ ██  ██ 
+-- ██       ██ ██     ██    ██      ██  ██ ██      ██ ██ ██    ██ ██  ██ ██ 
+-- ███████ ██   ██    ██    ███████ ██   ████ ███████ ██  ██████  ██   ████ 
 
 
 -- Extension Methods
@@ -170,12 +181,11 @@ setMemory key value ((k,v):xs)
 -- We can ignore the first param of `Func` since we don't care about a return type for a procedure
 runProc :: String -> [Stmt] -> Memory -> Functions -> Either Err Memory
 runProc funcName initVars mem (Functions funcs) = do
-    let funcToRun = lookup funcName funcs
-    case funcToRun of
-        Nothing -> Left $ FunctionMissing funcName
-        Just (Func _ prog) -> do
-            newMem <- execInitialExpressions initVars mem (Functions funcs)
-            interpret prog newMem (Functions funcs)
+    (Func _ prog) <- maybeToEither (FunctionMissing funcName) (lookup funcName funcs)
+
+    newMem <- execInitialExpressions initVars mem (Functions funcs)
+    finalMem <- interpret prog newMem (Functions funcs)
+    if hasEarlyRet finalMem then Right $ deleteMem "PROC_EARLY_RETURN" finalMem else Right finalMem -- Cleans up memory to be shown
 
 
 -- ABSTRACT OUT DUP CODE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -191,17 +201,16 @@ runProc funcName initVars mem (Functions funcs) = do
 -- memory in what is essentially a local state. Thus recursive method calls don't affect each other
 runFunc :: String -> [Stmt] -> Memory -> Functions  -> Either Err Int
 runFunc funcName initVars mem (Functions funcs) = do
-    let funcToRun = lookup funcName funcs
-    case funcToRun of
-        Nothing -> Left $ FunctionMissing funcName
-        Just (Func ret prog) -> do
-            newMem <- execInitialExpressions initVars mem (Functions funcs)
-            finalMem <- interpret prog newMem (Functions funcs)
-            case ret of
-                Nothing -> Left $ FunctionShouldHaveReturn funcName
-                Just ep -> evalExpression ep finalMem (Functions funcs)
+    (Func ret prog) <- maybeToEither (FunctionMissing funcName) (lookup funcName funcs)
 
-            
+    newMem <- execInitialExpressions initVars mem (Functions funcs)
+    finalMem <- interpret prog newMem (Functions funcs)
+
+    if hasEarlyRet finalMem then processEarlyReturn finalMem else do
+        retF <- maybeToEither (FunctionShouldHaveReturn funcName) ret
+        evalExpression retF finalMem (Functions funcs)
+
+
 -- | Executes the initial function values
 -- It is possible for a function to take initial values (params) so here we take each of them and
 -- set them in memory so that the function can use them
@@ -211,8 +220,22 @@ execInitialExpressions (x:xs) mem f = do
     res <- evalStatement x mem f
     execInitialExpressions xs res f
 
+hasEarlyRet :: Memory -> Bool
+hasEarlyRet mem = fst (last mem) == "PROC_EARLY_RETURN"
 
+processEarlyReturn :: Memory -> Either Err Int
+processEarlyReturn mem = do
+    let pair = last mem
+    case fst pair of
+        "PROC_EARLY_RETURN" -> Right $ snd pair
+        _ -> Left FunctionMissingEarlyReturn
 
+-- | Allows key deletion from memory
+deleteMem :: String -> Memory -> Memory
+deleteMem key = filter ((key /=) . fst)
 
+-- | Converts a maybe to an either with a default value
+maybeToEither :: a -> Maybe b -> Either a b
+maybeToEither err = maybe (Left err) Right
 --------------------------------------------------------------------------------
 

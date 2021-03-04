@@ -210,6 +210,7 @@ parseStmtTy "variables_set"       = parseVarSet
 parseStmtTy "controls_repeat_ext" = parseRepeat
 parseStmtTy "controls_if"         = parseControlIf
 parseStmtTy "procedures_callnoreturn" = parseProc -- Procedure Call Parser
+parseStmtTy "procedures_ifreturn" = parseEarlyReturn
 parseStmtTy ty = const $ throwE $
     "Unknown block type: " ++ unpack ty
 
@@ -249,15 +250,45 @@ convert = runExcept . parseDoc . documentRoot . parseLBS
 
 
 
+-- ███████ ██   ██ ████████ ███████ ███    ██ ███████ ██  ██████  ███    ██ 
+-- ██       ██ ██     ██    ██      ████   ██ ██      ██ ██    ██ ████   ██ 
+-- █████     ███      ██    █████   ██ ██  ██ ███████ ██ ██    ██ ██ ██  ██ 
+-- ██       ██ ██     ██    ██      ██  ██ ██      ██ ██ ██    ██ ██  ██ ██ 
+-- ███████ ██   ██    ██    ███████ ██   ████ ███████ ██  ██████  ██   ████ 
+
 
 -- Parsing Extension additions
 
+
+-- ██████  ██████   ██████   ██████ ███████ ██████  ██    ██ ██████  ███████ ███████ 
+-- ██   ██ ██   ██ ██    ██ ██      ██      ██   ██ ██    ██ ██   ██ ██      ██      
+-- ██████  ██████  ██    ██ ██      █████   ██   ██ ██    ██ ██████  █████   ███████ 
+-- ██      ██   ██ ██    ██ ██      ██      ██   ██ ██    ██ ██   ██ ██           ██ 
+-- ██      ██   ██  ██████   ██████ ███████ ██████   ██████  ██   ██ ███████ ███████ 
+
+
+
+
 -- Implementing functions/procedures should be a criminal offence :(
+
+
+-- | Parses an early return statement (if _ return) and (if _ return _)
+-- We default to ValE 1 if it doesn't have a return type as this means we can avoid using a Maybe
+-- and having to add extra logic elsewhere. We can do this because procedures return memory, thus
+-- the return never gets executed for them
+parseEarlyReturn :: Parser Element Program
+parseEarlyReturn e = do
+    cond <-  force "A early return condition is required!" $ value "CONDITION" (elementNodes  e)
+    retVal <- value "VALUE" (elementNodes e)
+    n <- parseNext e
+
+    return $ EarlyRet cond (fromMaybe (ValE 1) retVal) : n
+
 
 -- | Parser that attempts to parse a Function Call
 parseFunc :: Parser Element Expr
 parseFunc e = do
-    params <- parseFuncParams e 
+    params <- parseFuncParams e
     muts <- mutations e
     let funcName = fromMaybe "" ( M.lookup "name" muts)
     return $ RunFunc (unpack funcName) params
@@ -265,12 +296,15 @@ parseFunc e = do
 -- | Parser that attempts to parse a Procedure call
 parseProc :: Parser Element Program
 parseProc e = do
-    params <- parseFuncParams e 
-    --throwE (show params)
+    params <- parseFuncParams e
     muts <- mutations e
     let funcName = fromMaybe  "" (M.lookup "name" muts)
     p <- parseNext e
     return $ RunProc (unpack funcName) params : p
+
+
+
+-- Start Param Chaos
 
 
 -- | Parser that attempts to parse the function initial values (params)
@@ -278,28 +312,39 @@ parseFuncParams :: Parser Element [Stmt]
 parseFuncParams e = do
     case element "mutation" (elementNodes  e) of
         Nothing -> throwE "Could not parse function params"
-        Just e' -> return $ parseFuncParamsIter (Prelude.length (elementNodes e')) e
+        Just e' -> case parseFuncParamsIter (Prelude.length (elementNodes e')) e of
+            Left t -> throwE $ unpack t
+            Right s -> return s
 
 -- | Iterates over all the given initial values (if any)
 -- It does this backwards, but since doing it forward or backward still results in all params being
 -- present this doesn't matter
-parseFuncParamsIter :: Int -> Element -> [Stmt]
-parseFuncParamsIter 0 _ = []
+parseFuncParamsIter :: Int -> Element -> Either Text [Stmt]
+parseFuncParamsIter 0 _ = Right []
 parseFuncParamsIter ind e = do
     case parseFuncParam ind e of
-        Nothing -> [AssignStmt "parseFuncParamsIter" (ValE 1)]
-        Just stmt -> stmt : parseFuncParamsIter (ind-1) e
+        Left err -> Left err -- Skip broken params
+        Right stmt -> do
+            nex <- parseFuncParamsIter (ind-1) e
+            Right $ stmt : nex
 
 
 -- | Attempts to build a Stmt that will allow for initial function values (params) to work
-parseFuncParam :: Int -> Element -> Maybe Stmt
+-- | Pass back error, can't directly bind as we are switching between Maybe and Either
+parseFuncParam :: Int -> Element -> Either Text Stmt
 parseFuncParam ind e = do
 
-    paramName <- getParamName ind e
-    paramVal <- getParamValue ind e
 
-    Just (AssignStmt (unpack paramName) paramVal)
+    pn <- maybeToEither "Missing Param Name" (getParamName ind e)
+    pv <- maybeToEither "Missing Param Value" (getParamValue ind e)
 
+    Right $ AssignStmt (unpack pn) pv
+
+--    case getParamName ind e of
+--        Nothing -> Left "Missing Parameter Name"
+--        Just name -> case getParamValue ind e of
+--            Nothing -> Left "Missing Parameter Value!"
+--            Just val -> Right $ AssignStmt (unpack name) val
 
 -- Attempts to get the name associated with a function parameter
 getParamName :: Int -> Element -> Maybe Text
@@ -307,35 +352,37 @@ getParamName ind e = do
     muts <- element "mutation" (elementNodes e)
     let nodes = elementNodes muts
 
-    let nod = nodes !! (ind-1)
+    let nod = nodes !! (ind-1) -- !! Will never fail here when used with the website!
 
     el <- nodeToElement nod
 
     let attribs = elementAttributes el
-    
+
     name <- M.lookup "name" attribs
 
     Just name
 
 -- | Attempts to get the value associated with a function parameter
-getParamValue :: Int -> Element -> Maybe Expr  
+getParamValue :: Int -> Element -> Maybe Expr
 getParamValue ind e = do
     let val = elementsByName "value" (elementNodes e)
 
-    let nod = val !! (ind-1)
+    if Prelude.length val < ind then Nothing else do
 
-    block <- element "block" (elementNodes nod)
+        let nod = val !! (ind-1) -- !! Will never fail here when used with the website!
 
-    let blockAttribs = elementAttributes block
+        block <- element "block" (elementNodes nod)
 
-    tp <- M.lookup "type" blockAttribs
+        let blockAttribs = elementAttributes block
 
-    case tp of
-        "math_number" -> getParamValueFromMath block
-        "variables_get" -> getParamValueFromMath block
-        "procedures_callreturn" -> getParamValueFromFunc block
-        "math_arithmetic" -> getParamValueFromArith block
-        _ -> Nothing
+        tp <- M.lookup "type" blockAttribs
+
+        case tp of
+            "math_number" -> getParamValueFromMath block
+            "variables_get" -> getParamValueFromMath block
+            "procedures_callreturn" -> getParamValueFromFunc block
+            "math_arithmetic" -> getParamValueFromArith block
+            _ -> Nothing
 
 -- | Attempts to get the parsed ValE or VarE
 getParamValueFromMath :: Element -> Maybe Expr
@@ -346,26 +393,32 @@ getParamValueFromMath block = do
     let attribs = elementAttributes fied
     ty <- M.lookup "name" attribs
 
-    case ty of 
-        "NUM" -> Just $ ValE (read (unpack cont)) -- Switch to premade funcs
-        "VAR" -> Just $ VarE (unpack cont) -- Switch to premade funcs
+    case ty of
+        "NUM" -> Just $ ValE (read (unpack cont))
+        "VAR" -> Just $ VarE (unpack cont)
         _ -> Nothing
 
--- | Attempts to get the parsed function
-getParamValueFromFunc :: Element -> Maybe Expr 
+-- | Attempts to get the parsed RunFunc
+getParamValueFromFunc :: Element -> Maybe Expr
 getParamValueFromFunc e = do
     let fun = parseFunc e
-    case runExcept fun of 
+    case runExcept fun of
         Left _ -> Nothing
         Right ep -> Just ep
 
 -- | Attempts to get the parsed BinOpE
-getParamValueFromArith :: Element -> Maybe Expr        
+getParamValueFromArith :: Element -> Maybe Expr
 getParamValueFromArith e = do
     let fun = parseBinOp e
-    case runExcept fun of 
+    case runExcept fun of
         Left _ -> Nothing
         Right ep -> Just ep
+
+
+-- End Param Chaos
+
+
+
 
 -- | Parses a function block to check it has a valid ID and a type for `parseFunctionBlockTy`
 parseFunctionBlock :: Parser Element (String, Func)
@@ -380,7 +433,7 @@ parseFunctionBlock e@(Element {..}) = case M.lookup "id" elementAttributes of
 -- | Switches parsers based on the function type, with a default for the initial function
 parseFunctionBlockTy :: Text -> Parser Element (String, Func)
 parseFunctionBlockTy "entry_point" = parseEntryPoint
-parseFunctionBlockTy "procedures_defreturn" = parseFunction 
+parseFunctionBlockTy "procedures_defreturn" = parseFunction
 parseFunctionBlockTy "procedures_defnoreturn" = parseProcedure
 parseFunctionBlockTy ty = const $ throwE $
     "Unknown Function block type: " ++ unpack ty
@@ -402,11 +455,12 @@ parseFunction e = do
         Nothing -> throwE "Missing function field"
         Just fild -> do
             let name = nodeToContent (Prelude.head (elementNodes fild))
-            case name of 
+            case name of
                 Nothing -> throwE "Function has no name!"
                 Just n -> return (unpack n, Func returnType prog)
-                
+
 -- | Returns the expression that the return type evaluates to (if any)
+-- | It is possible for a function to not have a return type!
 getFunctionReturnType :: Element -> Maybe Expr
 getFunctionReturnType e = do
     vals <- element "value" (elementNodes e)
@@ -422,8 +476,8 @@ getFunctionReturnType e = do
         "VAR" -> Just (VarE (unpack val))
         "OP" -> do
             let binOp = parseBinOp block
-            let res = runExcept  binOp
-            case res of 
+            let res = runExcept binOp -- Parse it here instead so we can return nothing 
+            case res of
                 Left _ -> Nothing
                 Right ep -> Just ep
 
@@ -441,7 +495,7 @@ parseProcedure e = do
         Just fild -> do
             let name = nodeToContent (Prelude.head (elementNodes fild))
 
-            case name of 
+            case name of
                 Nothing -> throwE "Procedure has no name!"
                 Just n -> return $ ((unpack n), Func Nothing prog)
 
@@ -454,6 +508,9 @@ parseFuncStatement e = case element "statement" (elementNodes e) of
     Just e' -> Prelude.concat <$>
         mapM parseStmt (elementsByName "block" (elementNodes e'))
 
-        
+
+-- | Converts a maybe to an either with a default value
+maybeToEither :: a -> Maybe b -> Either a b
+maybeToEither err = maybe (Left err) Right
 
 --------------------------------------------------------------------------------
