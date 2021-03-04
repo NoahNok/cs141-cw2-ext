@@ -30,7 +30,7 @@ import Language
 -- | Represents a Google Blockly XML document.
 data Doc = Doc {
     docVars    :: [String],  -- ^ A list of variable names.
-    docProgram :: Functions    -- ^ The program.
+    docProgram :: Functions    -- ^ The program. - Modified to use custom Function storage
 } deriving Show
 
 --------------------------------------------------------------------------------
@@ -252,6 +252,9 @@ convert = runExcept . parseDoc . documentRoot . parseLBS
 
 -- Parsing Extension additions
 
+-- Implementing functions/procedures should be a criminal offence :(
+
+-- | Parser that attempts to parse a Function Call
 parseFunc :: Parser Element Expr
 parseFunc e = do
     params <- parseFuncParams e 
@@ -259,6 +262,7 @@ parseFunc e = do
     let funcName = fromMaybe "" ( M.lookup "name" muts)
     return $ RunFunc (unpack funcName) params
 
+-- | Parser that attempts to parse a Procedure call
 parseProc :: Parser Element Program
 parseProc e = do
     params <- parseFuncParams e 
@@ -269,13 +273,16 @@ parseProc e = do
     return $ RunProc (unpack funcName) params : p
 
 
-
+-- | Parser that attempts to parse the function initial values (params)
 parseFuncParams :: Parser Element [Stmt]
 parseFuncParams e = do
     case element "mutation" (elementNodes  e) of
-        Nothing -> return [AssignStmt "parseFuncParams" (ValE 1)] 
+        Nothing -> throwE "Could not parse function params"
         Just e' -> return $ parseFuncParamsIter (Prelude.length (elementNodes e')) e
 
+-- | Iterates over all the given initial values (if any)
+-- It does this backwards, but since doing it forward or backward still results in all params being
+-- present this doesn't matter
 parseFuncParamsIter :: Int -> Element -> [Stmt]
 parseFuncParamsIter 0 _ = []
 parseFuncParamsIter ind e = do
@@ -284,23 +291,17 @@ parseFuncParamsIter ind e = do
         Just stmt -> stmt : parseFuncParamsIter (ind-1) e
 
 
-
+-- | Attempts to build a Stmt that will allow for initial function values (params) to work
 parseFuncParam :: Int -> Element -> Maybe Stmt
 parseFuncParam ind e = do
-
-    
 
     paramName <- getParamName ind e
     paramVal <- getParamValue ind e
 
-    
-
     Just (AssignStmt (unpack paramName) paramVal)
 
---    paramValue <- getParamValue ind e
 
---    return $ AssignStmt (unpack paramName) paramValue
-
+-- Attempts to get the name associated with a function parameter
 getParamName :: Int -> Element -> Maybe Text
 getParamName ind e = do
     muts <- element "mutation" (elementNodes e)
@@ -316,7 +317,7 @@ getParamName ind e = do
 
     Just name
 
-
+-- | Attempts to get the value associated with a function parameter
 getParamValue :: Int -> Element -> Maybe Expr  
 getParamValue ind e = do
     let val = elementsByName "value" (elementNodes e)
@@ -336,7 +337,7 @@ getParamValue ind e = do
         "math_arithmetic" -> getParamValueFromArith block
         _ -> Nothing
 
-
+-- | Attempts to get the parsed ValE or VarE
 getParamValueFromMath :: Element -> Maybe Expr
 getParamValueFromMath block = do
     fied <- element "field" (elementNodes block)
@@ -346,10 +347,11 @@ getParamValueFromMath block = do
     ty <- M.lookup "name" attribs
 
     case ty of 
-        "NUM" -> Just $ ValE (read (unpack cont))
-        "VAR" -> Just $ VarE (unpack cont)
+        "NUM" -> Just $ ValE (read (unpack cont)) -- Switch to premade funcs
+        "VAR" -> Just $ VarE (unpack cont) -- Switch to premade funcs
         _ -> Nothing
 
+-- | Attempts to get the parsed function
 getParamValueFromFunc :: Element -> Maybe Expr 
 getParamValueFromFunc e = do
     let fun = parseFunc e
@@ -357,6 +359,7 @@ getParamValueFromFunc e = do
         Left _ -> Nothing
         Right ep -> Just ep
 
+-- | Attempts to get the parsed BinOpE
 getParamValueFromArith :: Element -> Maybe Expr        
 getParamValueFromArith e = do
     let fun = parseBinOp e
@@ -364,7 +367,7 @@ getParamValueFromArith e = do
         Left _ -> Nothing
         Right ep -> Just ep
 
-
+-- | Parses a function block to check it has a valid ID and a type for `parseFunctionBlockTy`
 parseFunctionBlock :: Parser Element (String, Func)
 parseFunctionBlock e@(Element {..}) = case M.lookup "id" elementAttributes of
     Nothing -> throwE $
@@ -374,6 +377,7 @@ parseFunctionBlock e@(Element {..}) = case M.lookup "id" elementAttributes of
         Nothing -> throwE "Block is missing attribute: type"
         Just ty -> parseFunctionBlockTy ty e
 
+-- | Switches parsers based on the function type, with a default for the initial function
 parseFunctionBlockTy :: Text -> Parser Element (String, Func)
 parseFunctionBlockTy "entry_point" = parseEntryPoint
 parseFunctionBlockTy "procedures_defreturn" = parseFunction 
@@ -381,12 +385,13 @@ parseFunctionBlockTy "procedures_defnoreturn" = parseProcedure
 parseFunctionBlockTy ty = const $ throwE $
     "Unknown Function block type: " ++ unpack ty
 
-
+-- | Parses the default entry point into our custom function layout
 parseEntryPoint :: Parser Element (String, Func)
 parseEntryPoint e = do
     prog <- parseNext e
     return $ ("start", Func Nothing  prog)
 
+-- | Parses a function into its name and actual function pair
 parseFunction :: Parser Element (String, Func)
 parseFunction e = do
     prog <- parseFuncStatement e
@@ -401,7 +406,7 @@ parseFunction e = do
                 Nothing -> throwE "Function has no name!"
                 Just n -> return (unpack n, Func returnType prog)
                 
-
+-- | Returns the expression that the return type evaluates to (if any)
 getFunctionReturnType :: Element -> Maybe Expr
 getFunctionReturnType e = do
     vals <- element "value" (elementNodes e)
@@ -425,7 +430,7 @@ getFunctionReturnType e = do
         _ -> Nothing
 
 
-
+-- | Parses a procedure into its name and actual function pair
 parseProcedure :: Parser Element (String, Func)
 parseProcedure e = do
     prog <- parseFuncStatement e
@@ -441,11 +446,14 @@ parseProcedure e = do
                 Just n -> return $ ((unpack n), Func Nothing prog)
 
 
-
+-- | Parses a function statement to get the blocks within the "statement" section
+-- Similar to parse Stmt
 parseFuncStatement :: Parser Element Program
 parseFuncStatement e = case element "statement" (elementNodes e) of
     Nothing -> return []
     Just e' -> Prelude.concat <$>
         mapM parseStmt (elementsByName "block" (elementNodes e'))
+
+        
 
 --------------------------------------------------------------------------------

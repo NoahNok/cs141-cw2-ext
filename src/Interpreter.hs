@@ -22,8 +22,8 @@ data Err
                                         -- exponent was attempted.
     | UninitialisedMemory String        -- ^ Tried to read from a variable
                                         -- that does not exist.
-    | FunctionMissing String
-    | FunctionShouldHaveReturn String
+    | FunctionMissing String -- Custom error for missing function
+    | FunctionShouldHaveReturn String -- Custom error for missing function return
     deriving (Eq, Show)
 
 --------------------------------------------------------------------------------
@@ -162,6 +162,12 @@ setMemory key value ((k,v):xs)
 
 
 -- Extension Methods
+
+-- | Runs the given procedure
+-- First we check that the given function exists, if it doesn't we throw a FunctionMissing error
+-- Otherwise we execute the initial function statements if any, binding the valid result to
+-- `newMem`, with that we then interpret the functions body and return its memory once finished
+-- We can ignore the first param of `Func` since we don't care about a return type for a procedure
 runProc :: String -> [Stmt] -> Memory -> Functions -> Either Err Memory
 runProc funcName initVars mem (Functions funcs) = do
     let funcToRun = lookup funcName funcs
@@ -171,6 +177,18 @@ runProc funcName initVars mem (Functions funcs) = do
             newMem <- execInitialExpressions initVars mem (Functions funcs)
             interpret prog newMem (Functions funcs)
 
+
+-- ABSTRACT OUT DUP CODE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+-- | Runs the given function
+-- This is very similar to above, with the only different being that we return a value based on the
+-- final memory. 
+-- This will either be a integer from `ValE` or an integer from the final memory via `VarE`
+-- If it is missing a return type then we return a error as it requires one to function, otherwise
+-- We evaluate the return expression with the final memory returning either an Int or an Error
+-- 
+-- A nice part about this is that we don't have to modify the memory structure since we can just 
+-- forget about the memory when we return a value, thus each function call operates on its given
+-- memory in what is essentially a local state. Thus recursive method calls don't affect each other
 runFunc :: String -> [Stmt] -> Memory -> Functions  -> Either Err Int
 runFunc funcName initVars mem (Functions funcs) = do
     let funcToRun = lookup funcName funcs
@@ -179,13 +197,14 @@ runFunc funcName initVars mem (Functions funcs) = do
         Just (Func ret prog) -> do
             newMem <- execInitialExpressions initVars mem (Functions funcs)
             finalMem <- interpret prog newMem (Functions funcs)
-            
             case ret of
                 Nothing -> Left $ FunctionShouldHaveReturn funcName
                 Just ep -> evalExpression ep finalMem (Functions funcs)
 
             
-
+-- | Executes the initial function values
+-- It is possible for a function to take initial values (params) so here we take each of them and
+-- set them in memory so that the function can use them
 execInitialExpressions :: [Stmt] -> Memory -> Functions -> Either Err Memory
 execInitialExpressions [] mem _ = Right mem
 execInitialExpressions (x:xs) mem f = do

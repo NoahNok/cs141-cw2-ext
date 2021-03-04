@@ -12,7 +12,7 @@ import Data.Foldable
 -- | Stores all the programs functions
 newtype Functions = Functions [(String, Func)]
 
-instance Show Functions where
+instance Show Functions where -- Show implementation for debugging (And to show I can implement :))
     show _ = "Functions"
 
 
@@ -86,7 +86,7 @@ data Expr
 -- Func (Possible Return Value) Body
 data Func = Func (Maybe Expr) Program
 
-instance Show Func where
+instance Show Func where -- Quick show instance to satisfy Func type
     show _ = "Function"
 
 --------------------------------------------------------------------------------
