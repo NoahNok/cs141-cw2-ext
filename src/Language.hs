@@ -81,6 +81,7 @@ data Expr
     | VarE String
     | BinOpE Op Expr Expr
     | RunFunc String [Stmt] -- Will run a function that returns a value for use in expressions
+    | MissingRet
     deriving Show
 
 -- | Function Definition

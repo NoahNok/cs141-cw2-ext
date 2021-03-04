@@ -273,16 +273,16 @@ convert = runExcept . parseDoc . documentRoot . parseLBS
 
 
 -- | Parses an early return statement (if _ return) and (if _ return _)
--- We default to ValE 1 if it doesn't have a return type as this means we can avoid using a Maybe
--- and having to add extra logic elsewhere. We can do this because procedures return memory, thus
--- the return never gets executed for them
+-- We default to MissingRet 1 if it doesn't have a return type as this means we can avoid using a Maybe
+-- and having to add extra logic elsewhere. We can do this because procedures return memory or an error
+-- thus we can check for this Expr and if it exists we can throw an error
 parseEarlyReturn :: Parser Element Program
 parseEarlyReturn e = do
     cond <-  force "A early return condition is required!" $ value "CONDITION" (elementNodes  e)
     retVal <- value "VALUE" (elementNodes e)
     n <- parseNext e
 
-    return $ EarlyRet cond (fromMaybe (ValE 1) retVal) : n
+    return $ EarlyRet cond (fromMaybe MissingRet retVal) : n
 
 
 -- | Parser that attempts to parse a Function Call

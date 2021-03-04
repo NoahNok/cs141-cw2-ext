@@ -138,6 +138,8 @@ evalExpression (BinOpE op e1 e2) memory f = do
 -- RUns a given function returning a value
 evalExpression (RunFunc name params) memory f = runFunc name params memory f
 
+evalExpression MissingRet  _ _ = Left FunctionMissingEarlyReturn
+
 -- | Given two integers and an operation we first check the two error cases for dividing by 0
 -- and a negative exponent. (We manually do the calc for neg exponent as its quicker)
 -- Then we call 'toOp' which returns the actual operator associated with the type
@@ -221,7 +223,9 @@ execInitialExpressions (x:xs) mem f = do
     execInitialExpressions xs res f
 
 hasEarlyRet :: Memory -> Bool
-hasEarlyRet mem = fst (last mem) == "PROC_EARLY_RETURN"
+hasEarlyRet mem
+    | not $ null mem = fst (last mem) == "PROC_EARLY_RETURN"
+    | otherwise = False
 
 processEarlyReturn :: Memory -> Either Err Int
 processEarlyReturn mem = do

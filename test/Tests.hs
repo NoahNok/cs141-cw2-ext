@@ -123,112 +123,46 @@ fib n =
         ]
     ]
 
+missingFunc :: Functions
+missingFunc = Functions [("start", Func Nothing [RunProc "missing" []])]
+
+validFunc :: Functions
+validFunc = Functions [("start", Func Nothing [RunProc "valid" []]), ("valid", Func Nothing [])]
+
+missingFuncRet :: Functions
+missingFuncRet = Functions [("start", Func Nothing [AssignStmt "x" (RunFunc "valid" [])]), ("valid", Func Nothing [])]
+
+hasFuncRet :: Functions
+hasFuncRet = Functions [("start", Func Nothing [AssignStmt "x" (RunFunc "valid" [])]), ("valid", Func (Just $ ValE 1) [])]
+
+
+newFib :: Int -> Functions
+newFib n = Functions [("start", Func Nothing (fib n))]
+
 --------------------------------------------------------------------------------
 
 -- | The tests.
 tests :: TestTree
 tests = localOption (Timeout (5*1000000) "5s") $ testGroup "Interpreter.interpret" 
     [
+        testCase "handles missing start" $
+        isSuccessful (interpretStart (Functions []) []) @?= False,
         testCase "handles the empty program" $
-        isSuccessful (interpret [] []) @?= True
-    ,   QC.testProperty "stores values in memory" $ \(x :: Int) ->
-        hasMemory [("x",x)] $ interpret [AssignStmt "x" (ValE x)] []
-    ,   QC.testProperty "loads values from memory" $ \(x :: Int) ->
-        hasMemory [("x",x),("y",x)] $ interpret [AssignStmt "y" (VarE "x")] [("x",x)]
-    ,   QC.testProperty "memory only contains one entry per variable after multiple assignments" $
-        \(x :: Int) (y :: Int) (z :: Int) ->
-            let r = interpret [ AssignStmt "x" (ValE x)
-                              , AssignStmt "x" (ValE y)
-                              , AssignStmt "x" (ValE z)
-                              ] [("x",0)]
-            in case r of
-                Left _  -> property False
-                Right m -> length (map fst m) ===
-                           length (nub $ map fst m)
-    ,   QC.testProperty "handles division by zero in assignments" $ \(x :: Int) ->
-        interpret [AssignStmt "x" (BinOpE Div (ValE x) (ValE 0))] []
-        === Left DivByZeroError
-    ,   QC.testProperty "handles negative exponents in assignments" $ \(x :: Int) ->
-        interpret [AssignStmt "x" (BinOpE Pow (ValE x) (ValE (-1)))] []
-        === Left NegativeExponentError
-    ,   testCase "handles uninitialised memory in assignments" $
-        interpret [AssignStmt "y" (VarE "x")] []
-        @?= Left (UninitialisedMemory "x")
-    ,   QC.testProperty "interprets arbitrary expressions in assignments" $ \expr ->
-        isSuccessful $ interpret [AssignStmt "x" expr] []
-    ,   QC.testProperty "implements repeat" $ \(Positive n) ->
-        hasMemory [("x",n)] $ interpret (repeatTest n) [("x", 0)]
-    ,   QC.testProperty "repeat condition can contain arbitrary expressions" $ \expr ->
-        terminates $ interpret (repeatArbitraryTest expr) [("x", 0)]
-    ,   QC.testProperty "repeat correctly handles exceptions in condition" $ \(x :: Int) ->
-             interpret [RepeatStmt (BinOpE Div (ValE x) (ValE 0)) []] []
-             === Left DivByZeroError
-        .&&. interpret [RepeatStmt (BinOpE Pow (ValE x) (ValE (-1))) []] []
-             === Left NegativeExponentError
-        .&&. interpret [RepeatStmt (VarE "x") []] []
-             === Left (UninitialisedMemory "x")
-    ,   QC.testProperty "repeat correctly handles exceptions in body" $ \(x :: Int) ->
-             interpret [RepeatStmt (ValE 10) [AssignStmt "y" (BinOpE Div (ValE x) (ValE 0))]] []
-             === Left DivByZeroError
-        .&&. interpret [RepeatStmt (ValE 10) [AssignStmt "y" (BinOpE Pow (ValE x) (ValE (-1)))]] []
-             === Left NegativeExponentError
-        .&&. interpret [RepeatStmt (ValE 10) [AssignStmt "y" (VarE "x")]] []
-             === Left (UninitialisedMemory "x")
-    ,   QC.testProperty "implements if" $ \(Positive n) ->
-        hasMemory [("x",n)] $ interpret (ifTest (ValE 0) n) [("x", 0)]
-    ,   QC.testProperty "if condition can contain arbitrary expressions" $ \(Positive n) expr ->
-        hasMemory [("x",n)] $ interpret (ifTest expr n) [("x", 0)]
-    ,   QC.testProperty "if condition treats non-zero numbers as true" $
-        forAll (arbitrary `suchThat` (/= 0)) $ \(n :: Int) ->
-        hasMemory [("x",n+1)] $ interpret (rawIfTest (ValE n) (n+1)) [("x", 0)]
-    ,   QC.testProperty "if correctly handles exceptions in condition" $ \(x :: Int) ->
-             interpret [IfStmt (BinOpE Div (ValE x) (ValE 0)) [] [] []] []
-             === Left DivByZeroError
-        .&&. interpret [IfStmt (BinOpE Pow (ValE x) (ValE (-1))) [] [] []] []
-             === Left NegativeExponentError
-        .&&. interpret [IfStmt (VarE "x") [] [] []] []
-             === Left (UninitialisedMemory "x")
-    ,   QC.testProperty "if correctly handles exceptions in body" $ \(x :: Int) ->
-             interpret [IfStmt (ValE 1) [AssignStmt "y" (BinOpE Div (ValE x) (ValE 0))] [] []] []
-             === Left DivByZeroError
-        .&&. interpret [IfStmt (ValE 1) [AssignStmt "y" (BinOpE Pow (ValE x) (ValE (-1)))] [] []] []
-             === Left NegativeExponentError
-        .&&. interpret [IfStmt (ValE 1) [AssignStmt "y" (VarE "x")] [] []] []
-             === Left (UninitialisedMemory "x")
-    ,   QC.testProperty "implements else" $ \(Positive n) ->
-        hasMemory [("x",n)] $ interpret (elseTest (ValE 0) n) [("x", 0)]
-    ,   QC.testProperty "else correctly handles exceptions in body" $ \(x :: Int) ->
-             interpret [IfStmt (ValE 0) [] [] [AssignStmt "y" (BinOpE Div (ValE x) (ValE 0))]] []
-             === Left DivByZeroError
-        .&&. interpret [IfStmt (ValE 0) [] [] [AssignStmt "y" (BinOpE Pow (ValE x) (ValE (-1)))]] []
-             === Left NegativeExponentError
-        .&&. interpret [IfStmt (ValE 0) [] [] [AssignStmt "y" (VarE "x")]] []
-             === Left (UninitialisedMemory "x")
-    ,   QC.testProperty "implements else if" $ \(Positive n) ->
-        hasMemory [("x",n)] $ interpret (ifElseTest (ValE 1) n) [("x", 0)]
-    ,   QC.testProperty "else if condition can contain arbitary expressions" $ \(Positive n) expr ->
-        hasMemory [("x",n)] $ interpret (ifElseTest expr n) [("x", 0)]
-    ,   QC.testProperty "else if condition treats non-zero numbers as true" $
-        forAll (arbitrary `suchThat` (/= 0)) $ \(n :: Int) ->
-        hasMemory [("x",n+1)] $ interpret (rawIfElseTest (ValE n) (n+1)) [("x", 0)]
-    ,   QC.testProperty "else if correctly handles exceptions in condition" $ \(x :: Int) ->
-             interpret [IfStmt (ValE 0) [] [(BinOpE Div (ValE x) (ValE 0), [])] []] []
-             === Left DivByZeroError
-        .&&. interpret [IfStmt (ValE 0) [] [(BinOpE Pow (ValE x) (ValE (-1)), [])] []] []
-             === Left NegativeExponentError
-        .&&. interpret [IfStmt (ValE 0) [] [(VarE "x", [])] []] []
-             === Left (UninitialisedMemory "x")
-    ,   QC.testProperty "else if correctly handles exceptions in body" $ \(x :: Int) ->
-             interpret [IfStmt (ValE 0) [] [(ValE 1, [AssignStmt "y" (BinOpE Div (ValE x) (ValE 0))])] []] []
-             === Left DivByZeroError
-        .&&. interpret [IfStmt (ValE 0) [] [(ValE 1, [AssignStmt "y" (BinOpE Pow (ValE x) (ValE (-1)))])] []] []
-             === Left NegativeExponentError
-        .&&. interpret [IfStmt (ValE 0) [] [(ValE 1, [AssignStmt "y" (VarE "x")])] []] []
-             === Left (UninitialisedMemory "x")
-    ,   testGroup "Example programs" [
-            QC.testProperty "computes fibonacci numbers" $ \(Positive n) ->
-                hasMemory [("x", fibs !! (n-1))] $ interpret (fib n) [("x",0),("y",0),("z",1)]
+        isSuccessful (interpretStart (Functions [("start", Func Nothing [])]) []) @?= True,
+        testCase "handles missing function" $
+        isSuccessful (interpretStart missingFunc []) @?= False,
+        testCase "handles existing function" $
+        isSuccessful (interpretStart validFunc []) @?= True,
+        testCase "handles function missing return type" $
+        isSuccessful (interpretStart missingFuncRet []) @?= False,
+        testCase "handles function with return type" $
+        isSuccessful (interpretStart hasFuncRet []) @?= True,
+        testGroup "Example programs" [
+            QC.testProperty "computes fibonacci numbers in extension format" $ \(Positive n) ->
+                hasMemory [("x", fibs !! (n-1))] $ interpretStart (newFib n) [("x",0),("y",0),("z",1)]
         ]
+
+        
     ]
 
 -- | The list of tasty ingredients. Note: the order seems to matter, 
